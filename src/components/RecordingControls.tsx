@@ -1,24 +1,35 @@
 'use client'
 
 import React, { useState, useEffect } from 'react';
-import { startRecording, stopRecording, playRecording, saveRecordingToSupabase, fetchRecordingsFromSupabase } from '../utils/recording';
+import { startRecording, stopRecording, saveRecordingToSupabase, fetchRecordingsFromSupabase } from '../utils/recording';
 import { Button } from './ui/button';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './ui/card';
 
 interface Recording {
   id: string;
-  notes: { note: string; timestamp: number }[];
+  frames: { timestamp: number; activeNotes: string[] }[];
+  location: string;
+  timestamp: string;
+  name: string;
+  duration: number;
 }
 
 interface RecordingControlsProps {
   isRecording: boolean;
+  isPlaying: boolean;
   onStartRecording: () => void;
   onStopRecording: () => void;
+  onPlayRecording: (frames: { timestamp: number; activeNotes: string[] }[]) => void;
+  onNotesChange: (notes: string[]) => void;
 }
 
 const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
+  isPlaying,
   onStartRecording,
   onStopRecording,
+  onPlayRecording,
+  onNotesChange,
 }) => {
   const [recordings, setRecordings] = useState<Recording[]>([]);
 
@@ -35,11 +46,7 @@ const RecordingControls: React.FC<RecordingControlsProps> = ({
     onStopRecording();
     const newRecording = stopRecording();
     if (newRecording) {
-      const formattedRecording = {
-        ...newRecording,
-        notes: newRecording.notes.map(({ note, startTime }) => ({ note, timestamp: startTime }))
-      };
-      const savedRecording = await saveRecordingToSupabase(formattedRecording);
+      const savedRecording = await saveRecordingToSupabase(newRecording);
       if (savedRecording) {
         console.log('Recording saved and returned from Supabase:', savedRecording);
         setRecordings(prev => [...prev, savedRecording]);
@@ -52,16 +59,22 @@ const RecordingControls: React.FC<RecordingControlsProps> = ({
   };
 
   const handlePlayRecording = (recording: Recording) => {
-    if (recording && recording.notes) {
-      const formattedNotes = recording.notes.map(note => ({
-        ...note,
-        startTime: note.timestamp,
-        endTime: note.timestamp + 1000 // Assuming a default duration of 1 second
-      }));
-      playRecording(formattedNotes);
+    if (recording && Array.isArray(recording.frames) && !isPlaying) {
+      onPlayRecording(recording.frames);
     } else {
-      console.error('Invalid recording or notes');
+      console.error('Invalid recording or frames, or already playing');
     }
+  };
+
+  const formatTimestamp = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      hour: 'numeric', 
+      minute: '2-digit', 
+      hour12: true 
+    });
   };
 
   return (
@@ -75,17 +88,28 @@ const RecordingControls: React.FC<RecordingControlsProps> = ({
           Start Recording
         </Button>
       )}
-      <div className="mt-4">
-        <h2 className="text-xl font-bold mb-2">Recordings</h2>
-        <ul>
-          {recordings.map((recording) => (
-            <li key={recording.id} className="mb-2">
-              <Button variant="outline" onClick={() => handlePlayRecording(recording)}>
-                Play Recording {recording.id}
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {recordings.map((recording) => (
+          <Card key={recording.id}>
+            <CardHeader>
+              <CardTitle className="text-sm">{recording.name}</CardTitle>
+              <CardDescription>{recording.location} • {formatTimestamp(recording.timestamp)}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p>Number of frames: {recording.frames.length}</p>
+              <p>Duration: {recording.duration.toFixed(2)} seconds</p>
+            </CardContent>
+            <CardFooter>
+              <Button 
+                variant="outline" 
+                onClick={() => handlePlayRecording(recording)}
+                disabled={isPlaying}
+              >
+                {isPlaying ? 'Playing...' : 'Play Recording'}
               </Button>
-            </li>
-          ))}
-        </ul>
+            </CardFooter>
+          </Card>
+        ))}
       </div>
     </div>
   );

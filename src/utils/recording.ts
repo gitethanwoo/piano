@@ -1,89 +1,132 @@
 import { playNote, stopNote } from './audio';
 import { supabase } from './supabase';
+import { getLocationData } from './location';
 
 let isRecording = false;
-let currentRecording: { note: string; startTime: number; endTime?: number }[] = [];
+let currentRecording: { timestamp: number; activeNotes: string[] }[] = [];
 let startTime: number;
+
+const RECORDING_INTERVAL = 50; // ms
+let recordingInterval: NodeJS.Timeout | null = null;
+
+let isPlaying = false; // Add this flag
+let playbackTimeouts: NodeJS.Timeout[] = []; // Array to store timeouts
 
 export const startRecording = () => {
   isRecording = true;
   currentRecording = [];
   startTime = Date.now();
+  recordingInterval = setInterval(recordCurrentState, RECORDING_INTERVAL);
 };
 
 export const stopRecording = () => {
   isRecording = false;
+  if (recordingInterval) {
+    clearInterval(recordingInterval);
+  }
   const recording = {
     id: `recording-${Date.now()}`,
-    notes: currentRecording,
+    frames: currentRecording,
   };
   currentRecording = [];
   return recording;
 };
 
-export const recordNote = (note: string, timestamp: number, isKeyDown: boolean) => {
+const recordCurrentState = () => {
   if (isRecording) {
-    if (isKeyDown) {
-      currentRecording.push({ note, startTime: timestamp - startTime });
-    } else {
-      const noteIndex = currentRecording.findIndex(
-        (n) => n.note === note && n.endTime === undefined
-      );
-      if (noteIndex !== -1) {
-        currentRecording[noteIndex].endTime = timestamp - startTime;
-      }
-    }
+    const timestamp = Date.now() - startTime;
+    const activeNotes = Array.from(document.querySelectorAll('.bg-blue-300')).map(
+      (el) => (el as HTMLElement).dataset.note || ''
+    );
+    const activeKeys = activeNotes.map(note => {
+      const key = keys.find(k => k.note === note);
+      return key ? key.key : '';
+    }).filter(Boolean);
+    currentRecording.push({ timestamp, activeNotes: activeKeys });
   }
 };
 
-export const playRecording = (notes: { note: string; startTime: number; endTime?: number }[] | string) => {
-  const startPlayTime = Date.now();
-  let parsedNotes: { note: string; startTime: number; endTime?: number }[];
+export const keys = [
+  { note: 'C', key: 'A', frequency: 261.63 },
+  { note: 'D', key: 'S', frequency: 293.66 },
+  { note: 'E', key: 'D', frequency: 329.63 },
+  { note: 'F', key: 'F', frequency: 349.23 },
+  { note: 'G', key: 'G', frequency: 392.00 },
+  { note: 'A', key: 'H', frequency: 440.00 },
+  { note: 'B', key: 'J', frequency: 493.88 },
+  { note: 'C', key: 'K', frequency: 523.25 },
+];
 
-  try {
-    if (typeof notes === 'string') {
-      parsedNotes = JSON.parse(notes);
-    } else if (Array.isArray(notes)) {
-      parsedNotes = notes;
-    } else {
-      throw new Error('Invalid notes format');
-    }
+export const playRecording = (
+  frames: { timestamp: number; activeNotes: string[] }[],
+  onNotesChange: (notes: string[]) => void
+) => {
+  if (isPlaying) return; // Prevent multiple invocations
+  isPlaying = true; // Set the flag to true
 
-    if (!Array.isArray(parsedNotes)) {
-      throw new Error('Parsed notes is not an array');
-    }
-
-    parsedNotes.forEach(({ note, startTime, endTime }) => {
-      setTimeout(() => {
-        const key = keys.find(k => k.note === note);
-        if (key) {
-          playNote(key.frequency);
-          if (endTime) {
-            const duration = endTime - startTime;
-            setTimeout(() => stopNote(key.frequency), duration);
-          } else {
-            setTimeout(() => stopNote(key.frequency), 200); // Fallback to 200ms if no endTime
-          }
+  let previousNotes: string[] = [];
+  
+  frames.forEach((frame, index) => {
+    const timeout = setTimeout(() => {
+      // Stop notes that are no longer active
+      previousNotes.forEach(note => {
+        if (!frame.activeNotes.includes(note)) {
+          const key = keys.find(k => k.key === note); // Change from k.note to k.key
+          if (key) stopNote(key.frequency);
         }
-      }, startTime);
-    });
-  } catch (error) {
-    console.error('Error playing recording:', error);
-    if (error instanceof Error) {
-      console.error('Error message:', error.message);
-    }
-  }
+      });
+      
+      // Play new active notes
+      frame.activeNotes.forEach(note => {
+        if (!previousNotes.includes(note)) {
+          const key = keys.find(k => k.key === note); // Change from k.note to k.key
+          if (key) playNote(key.frequency);
+        }
+      });
+      
+      previousNotes = frame.activeNotes;
+      onNotesChange(frame.activeNotes); // Call the callback with current active notes
+    }, frame.timestamp);
+    playbackTimeouts.push(timeout); // Store the timeout
+  });
+
+  return new Promise<void>((resolve) => {
+    const finalTimeout = setTimeout(() => {
+      onNotesChange([]); // Clear playing notes at the end
+      isPlaying = false; // Reset the flag
+      playbackTimeouts.forEach(clearTimeout); // Clear all timeouts
+      playbackTimeouts = []; // Reset the timeouts array
+      resolve();
+    }, frames[frames.length - 1].timestamp);
+    playbackTimeouts.push(finalTimeout); // Store the final timeout
+  });
 };
 
-export const saveRecordingToSupabase = async (recording: { id: string; notes: { note: string; timestamp: number }[] }) => {
+export const saveRecordingToSupabase = async (recording: { id: string; frames: { timestamp: number; activeNotes: string[] }[] }) => {
   try {
-    console.log('Attempting to save recording to Supabase:', recording);
-    console.log('Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
-    console.log('Supabase Key (first 5 chars):', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.substring(0, 5));
+    const locationData = await getLocationData();
+    const location = locationData ? `${locationData.city}, ${locationData.region}` : 'Unknown';
+    const timestamp = new Date().toISOString();
+    const name = `Recording ${new Date().toLocaleString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      hour: 'numeric', 
+      minute: '2-digit', 
+      hour12: true 
+    })}`;
+
+    const duration = recording.frames[recording.frames.length - 1].timestamp / 1000;
 
     const { data, error } = await supabase
       .from('recordings')
-      .insert([{ id: recording.id, notes: JSON.stringify(recording.notes) }])
+      .insert([{ 
+        id: recording.id, 
+        frames: JSON.stringify(recording.frames),
+        location,
+        timestamp,
+        name,
+        duration
+      }])
       .select()
       .single();
 
@@ -92,13 +135,13 @@ export const saveRecordingToSupabase = async (recording: { id: string; notes: { 
       throw error;
     }
     console.log('Recording saved successfully:', data);
-    return data;
+    return {
+      ...data,
+      frames: JSON.parse(data.frames),
+      duration: parseFloat(data.duration)
+    };
   } catch (error) {
     console.error('Error saving recording:', error);
-    if (error instanceof Error) {
-      console.error('Error message:', error.message);
-      console.error('Error stack:', error.stack);
-    }
     return null;
   }
 };
@@ -113,21 +156,11 @@ export const fetchRecordingsFromSupabase = async () => {
     if (error) throw error;
     return data.map(record => ({
       ...record,
-      notes: typeof record.notes === 'string' ? JSON.parse(record.notes) : record.notes,
+      frames: JSON.parse(record.frames),
+      duration: parseFloat(record.duration)
     }));
   } catch (error) {
     console.error('Error fetching recordings:', error);
     return [];
   }
 };
-
-const keys = [
-  { note: 'C', key: 'A', frequency: 261.63 },
-  { note: 'D', key: 'S', frequency: 293.66 },
-  { note: 'E', key: 'D', frequency: 329.63 },
-  { note: 'F', key: 'F', frequency: 349.23 },
-  { note: 'G', key: 'G', frequency: 392.00 },
-  { note: 'A', key: 'H', frequency: 440.00 },
-  { note: 'B', key: 'J', frequency: 493.88 },
-  { note: 'C', key: 'K', frequency: 523.25 },
-];
