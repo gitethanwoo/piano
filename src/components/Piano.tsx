@@ -69,7 +69,7 @@ const Piano: React.FC<PianoProps> = ({ isRecording, playingNotes }) => {
   };
 
   return (
-    <div className="w-full overflow-x-auto">
+    <div className="w-full overflow-x-auto touch-none">
       <div className="flex justify-center min-w-max">
         {keys.map((key) => (
           <div
